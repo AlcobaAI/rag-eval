@@ -1,0 +1,23 @@
+services:
+  evaluator:
+    build:
+      context: .
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+      - /app/.venv
+    environment:
+      - QDRANT_HOST=qdrant
+    depends_on:
+      - qdrant
+
+  qdrant:
+    image: qdrant/qdrant:v1.9.0
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+
+volumes:
+  qdrant_storage:
