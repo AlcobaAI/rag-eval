@@ -4,15 +4,21 @@ import os
 import time
 from deepeval import assert_test
 from deepeval.test_case import LLMTestCase
-from deepeval.metrics import ContextualRecallMetric, ContextualPrecisionMetric
+from deepeval.metrics import ContextualRecallMetric, ContextualPrecisionMetric, FaithfulnessMetric
 from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
 from datasets import load_dataset
+from dotenv import load_dotenv
 
-# --- Configuration ---
-BENCHMARK_NAME = "techqa" 
-COLLECTION = f"benchmark_{BENCHMARK_NAME}"
-RESULTS_FILE = "benchmark_performance.tsv"
+load_dotenv()
+BENCHMARK_NAME = os.getenv("BENCHMARK_NAME", "techqa")
+COLLECTION = os.getenv("COLLECTION", f"benchmark_{BENCHMARK_NAME}")
+RESULTS_FILE = os.getenv("RESULTS_FILE", "benchmark_performance.tsv")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+SAMPLE_SIZE = int(os.getenv("BENCHMARK_SAMPLE_SIZE", 100))
+STRICT_MODE = os.getenv("STRICT_MODE", "True") == "True"
+
+
 # Change this label when you test different techniques (e.g., "BGE-Small-K10")
 CONFIG_LABEL = "Vanilla-BGE-Small-K5" 
 
@@ -38,15 +44,22 @@ def search_qdrant(query, limit=5):
     latency_ms = (end_time - start_time) * 1000
     return [res.payload["text"] for res in results], latency_ms
 
-@pytest.mark.parametrize("i, row", enumerate(load_dataset("galileo-ai/ragbench", BENCHMARK_NAME, split="test").select(range(10))))
-def test_retrieval_benchmarks(i, row):
+dataset = load_dataset("galileo-ai/ragbench", BENCHMARK_NAME, split="test").shuffle(seed=42)
+
+test_range = range(min(SAMPLE_SIZE, len(dataset)))
+
+@pytest.mark.parametrize("i", test_range)
+def test_retrieval_benchmarks(i):
+    # The rest of the logic remains identical
+    row = dataset[i]
     query = row["question"]
     expected_output = row.get("response") or row.get("answer")
 
     retrieved_contexts, latency = search_qdrant(query)
 
-    recall_metric = ContextualRecallMetric(threshold=0.7)
-    precision_metric = ContextualPrecisionMetric(threshold=0.7)
+    recall_metric = ContextualRecallMetric(threshold=0.7, model=OPENAI_MODEL)
+    precision_metric = ContextualPrecisionMetric(threshold=0.7, model=OPENAI_MODEL)
+    faithfulness_metric = FaithfulnessMetric(threshold=0.8, model=OPENAI_MODEL)
 
     test_case = LLMTestCase(
         input=query,
@@ -58,8 +71,8 @@ def test_retrieval_benchmarks(i, row):
     try:
         recall_metric.measure(test_case)
         precision_metric.measure(test_case)
-        
-        assert_test(test_case, [recall_metric, precision_metric])
+        faithfulness_metric.measure(test_case)
+        assert_test(test_case, [recall_metric, precision_metric, faithfulness_metric])
     except Exception as e:
         pass
     finally:
@@ -68,11 +81,13 @@ def test_retrieval_benchmarks(i, row):
 
             r_score = getattr(recall_metric, 'score', 0)
             p_score = getattr(precision_metric, 'score', 0)
-            
+            f_score = getattr(faithfulness_metric, 'score', 0)
+
             writer.writerow([
                 f"{BENCHMARK_NAME}_row_{i}",
                 CONFIG_LABEL,
                 round(r_score, 4) if r_score is not None else 0,
                 round(p_score, 4) if p_score is not None else 0,
+                round(f_score, 4) if f_score is not None else 0,
                 round(latency, 2)
             ])
