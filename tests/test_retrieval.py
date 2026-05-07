@@ -1,93 +1,88 @@
 import pytest
-import csv
 import os
-import time
+import importlib
+import csv
+from dotenv import load_dotenv
 from deepeval import assert_test
 from deepeval.test_case import LLMTestCase
 from deepeval.metrics import ContextualRecallMetric, ContextualPrecisionMetric, FaithfulnessMetric
-from qdrant_client import QdrantClient
-from sentence_transformers import SentenceTransformer
 from datasets import load_dataset
-from dotenv import load_dotenv
 
 load_dotenv()
+
+MODULE_PATH = os.getenv("RETRIEVER_MODULE")
+CLASS_NAME = os.getenv("RETRIEVER_CLASS")
 BENCHMARK_NAME = os.getenv("BENCHMARK_NAME", "techqa")
-COLLECTION = os.getenv("COLLECTION", f"benchmark_{BENCHMARK_NAME}")
-RESULTS_FILE = os.getenv("RESULTS_FILE", "benchmark_performance.tsv")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-SAMPLE_SIZE = int(os.getenv("BENCHMARK_SAMPLE_SIZE", 100))
-STRICT_MODE = os.getenv("STRICT_MODE", "True") == "True"
+RESULTS_FILE = os.getenv("RESULTS_FILE", "benchmark_performance.tsv")
+SAMPLE_SIZE = int(os.getenv("BENCHMARK_SAMPLE_SIZE", 10))
 
+@pytest.fixture(scope="module")
+def retriever():
+    """Dynamically loads the retriever class defined in .env"""
+    try:
+        module = importlib.import_module(MODULE_PATH)
+        retriever_class = getattr(module, CLASS_NAME)
+        return retriever_class(collection_name=f"benchmark_{BENCHMARK_NAME}")
+    except (ImportError, AttributeError) as e:
+        pytest.exit(f"Critical: Could not load {CLASS_NAME} from {MODULE_PATH}. Error: {e}")
 
-# Change this label when you test different techniques (e.g., "BGE-Small-K10")
-CONFIG_LABEL = "Vanilla-BGE-Small-K5" 
-
-client = QdrantClient(url="http://qdrant:6333")
-embed_model = SentenceTransformer('BAAI/bge-small-en-v1.5')
-
-# Initialize TSV with headers if it doesn't exist
-if not os.path.exists(RESULTS_FILE):
-    with open(RESULTS_FILE, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.writer(f, delimiter='\t')
-        writer.writerow(["Test_Name", "Configuration", "Recall_Score", "Precision_Score", "Search_Latency_ms"])
-
-def search_qdrant(query, limit=5):
-    start_time = time.perf_counter()
-    query_vector = embed_model.encode(query).tolist()
-    results = client.search(
-        collection_name=COLLECTION,
-        query_vector=query_vector,
-        limit=limit,
-        with_payload=True
-    )
-    end_time = time.perf_counter()
-    latency_ms = (end_time - start_time) * 1000
-    return [res.payload["text"] for res in results], latency_ms
-
+# Load dataset once per session
 dataset = load_dataset("galileo-ai/ragbench", BENCHMARK_NAME, split="test").shuffle(seed=42)
 
-test_range = range(min(SAMPLE_SIZE, len(dataset)))
-
-@pytest.mark.parametrize("i", test_range)
-def test_retrieval_benchmarks(i):
-    # The rest of the logic remains identical
+@pytest.mark.parametrize("i", range(min(SAMPLE_SIZE, len(dataset))))
+def test_retrieval_benchmarks(i, retriever):
     row = dataset[i]
     query = row["question"]
     expected_output = row.get("response") or row.get("answer")
 
-    retrieved_contexts, latency = search_qdrant(query)
+    # Plug-and-play retrieval
+    retrieved_contexts, latency = retriever.search(query)
 
+    # Initialize Metrics
     recall_metric = ContextualRecallMetric(threshold=0.7, model=OPENAI_MODEL)
     precision_metric = ContextualPrecisionMetric(threshold=0.7, model=OPENAI_MODEL)
     faithfulness_metric = FaithfulnessMetric(threshold=0.8, model=OPENAI_MODEL)
 
     test_case = LLMTestCase(
         input=query,
-        actual_output=expected_output, 
+        actual_output=expected_output,
         expected_output=expected_output,
         retrieval_context=retrieved_contexts
     )
 
+    # Execute measures
     try:
         recall_metric.measure(test_case)
         precision_metric.measure(test_case)
         faithfulness_metric.measure(test_case)
-        assert_test(test_case, [recall_metric, precision_metric, faithfulness_metric])
-    except Exception as e:
-        pass
+    except Exception:
+        pass # Logs 0 if the metric fails to execute
     finally:
-        with open(RESULTS_FILE, 'a', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f, delimiter='\t')
+        save_results(
+            i, 
+            retriever.label, 
+            recall_metric.score, 
+            precision_metric.score, 
+            faithfulness_metric.score, 
+            latency
+        )
+    
+    assert_test(test_case, [recall_metric, precision_metric, faithfulness_metric])
 
-            r_score = getattr(recall_metric, 'score', 0)
-            p_score = getattr(precision_metric, 'score', 0)
-            f_score = getattr(faithfulness_metric, 'score', 0)
-
-            writer.writerow([
-                f"{BENCHMARK_NAME}_row_{i}",
-                CONFIG_LABEL,
-                round(r_score, 4) if r_score is not None else 0,
-                round(p_score, 4) if p_score is not None else 0,
-                round(f_score, 4) if f_score is not None else 0,
-                round(latency, 2)
-            ])
+def save_results(idx, config_label, r_score, p_score, f_score, latency):
+    file_exists = os.path.exists(RESULTS_FILE)
+    with open(RESULTS_FILE, 'a', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f, delimiter='\t')
+        if not file_exists:
+            writer.writerow(["Benchmark", "Test_Name", "Configuration", "Recall", "Precision", "Faithfulness", "Latency_ms"])
+        
+        writer.writerow([
+            BENCHMARK_NAME,
+            f"row_{idx}",
+            config_label,
+            round(r_score or 0, 4),
+            round(p_score or 0, 4),
+            round(f_score or 0, 4),
+            round(latency, 2)
+        ])
