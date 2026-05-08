@@ -27,19 +27,59 @@ def retriever():
     except (ImportError, AttributeError) as e:
         pytest.exit(f"Critical: Could not load {CLASS_NAME} from {MODULE_PATH}. Error: {e}")
 
-# Load dataset once per session
 dataset = load_dataset("galileo-ai/ragbench", BENCHMARK_NAME, split="test").shuffle(seed=42)
 
-@pytest.mark.parametrize("i", range(min(SAMPLE_SIZE, len(dataset))))
+def get_test_indices(benchmark_name, config_label):
+    """Get indices of rows that haven't been processed yet for this benchmark/config combo"""
+    processed_indices = set()
+    
+    if os.path.exists(RESULTS_FILE):
+        with open(RESULTS_FILE, 'r', encoding='utf-8') as f:
+            reader = csv.reader(f, delimiter='\t')
+            next(reader, None)  # Skip header
+            for row in reader:
+                if row and len(row) >= 3:
+                    benchmark = row[0]
+                    test_name = row[1]
+                    configuration = row[2]
+                    # Only mark as processed if benchmark, test_name, AND configuration all match
+                    if benchmark == benchmark_name and configuration == config_label and test_name.startswith("row_"):
+                        try:
+                            idx = int(test_name.split("_")[1])
+                            processed_indices.add(idx)
+                        except (ValueError, IndexError):
+                            pass
+    
+    all_indices = list(range(min(SAMPLE_SIZE, len(dataset))))
+    
+    unprocessed = [i for i in all_indices if i not in processed_indices]
+    
+    return unprocessed
+
+def pytest_generate_tests(metafunc):
+    """Dynamically generate test parameters and skip if all samples are processed"""
+    if "i" in metafunc.fixturenames:
+        # Load retriever to get configuration label
+        try:
+            module = importlib.import_module(MODULE_PATH)
+            retriever_class = getattr(module, CLASS_NAME)
+            retriever_instance = retriever_class(collection_name=f"benchmark_{BENCHMARK_NAME}")
+            config_label = retriever_instance.label
+        except (ImportError, AttributeError) as e:
+            pytest.exit(f"Critical: Could not load {CLASS_NAME} from {MODULE_PATH}. Error: {e}")
+        
+        indices = get_test_indices(BENCHMARK_NAME, config_label)
+        if not indices:
+            pytest.skip(f"All {SAMPLE_SIZE} samples have been processed for {BENCHMARK_NAME} with configuration {config_label}. No new tests to run.")
+        metafunc.parametrize("i", indices)
+
 def test_retrieval_benchmarks(i, retriever):
     row = dataset[i]
     query = row["question"]
     expected_output = row.get("response") or row.get("answer")
 
-    # Plug-and-play retrieval
     retrieved_contexts, latency = retriever.search(query)
 
-    # Initialize Metrics
     recall_metric = ContextualRecallMetric(threshold=0.7, model=OPENAI_MODEL)
     precision_metric = ContextualPrecisionMetric(threshold=0.7, model=OPENAI_MODEL)
 
@@ -50,12 +90,11 @@ def test_retrieval_benchmarks(i, retriever):
         retrieval_context=retrieved_contexts
     )
 
-    # Execute measures
     try:
         recall_metric.measure(test_case)
         precision_metric.measure(test_case)
     except Exception:
-        pass # Logs 0 if the metric fails to execute
+        pass
     finally:
         save_results(
             i, 
