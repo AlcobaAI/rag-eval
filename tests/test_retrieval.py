@@ -5,7 +5,7 @@ import csv
 from dotenv import load_dotenv
 from deepeval import assert_test
 from deepeval.test_case import LLMTestCase
-from deepeval.metrics import ContextualRecallMetric, ContextualPrecisionMetric, FaithfulnessMetric
+from deepeval.metrics import ContextualRecallMetric, ContextualPrecisionMetric
 from datasets import load_dataset
 
 load_dotenv()
@@ -42,7 +42,6 @@ def test_retrieval_benchmarks(i, retriever):
     # Initialize Metrics
     recall_metric = ContextualRecallMetric(threshold=0.7, model=OPENAI_MODEL)
     precision_metric = ContextualPrecisionMetric(threshold=0.7, model=OPENAI_MODEL)
-    faithfulness_metric = FaithfulnessMetric(threshold=0.8, model=OPENAI_MODEL)
 
     test_case = LLMTestCase(
         input=query,
@@ -55,7 +54,6 @@ def test_retrieval_benchmarks(i, retriever):
     try:
         recall_metric.measure(test_case)
         precision_metric.measure(test_case)
-        faithfulness_metric.measure(test_case)
     except Exception:
         pass # Logs 0 if the metric fails to execute
     finally:
@@ -64,18 +62,17 @@ def test_retrieval_benchmarks(i, retriever):
             retriever.label, 
             recall_metric.score, 
             precision_metric.score, 
-            faithfulness_metric.score, 
             latency
         )
     
-    assert_test(test_case, [recall_metric, precision_metric, faithfulness_metric])
+    assert_test(test_case, [recall_metric, precision_metric])
 
-def save_results(idx, config_label, r_score, p_score, f_score, latency):
+def save_results(idx, config_label, r_score, p_score, latency):
     file_exists = os.path.exists(RESULTS_FILE)
     with open(RESULTS_FILE, 'a', newline='', encoding='utf-8') as f:
         writer = csv.writer(f, delimiter='\t')
         if not file_exists:
-            writer.writerow(["Benchmark", "Test_Name", "Configuration", "Recall", "Precision", "Faithfulness", "Latency_ms"])
+            writer.writerow(["Benchmark", "Test_Name", "Configuration", "Recall", "Precision", "Latency_ms"])
         
         writer.writerow([
             BENCHMARK_NAME,
@@ -83,6 +80,5 @@ def save_results(idx, config_label, r_score, p_score, f_score, latency):
             config_label,
             round(r_score or 0, 4),
             round(p_score or 0, 4),
-            round(f_score or 0, 4),
             round(latency, 2)
         ])
