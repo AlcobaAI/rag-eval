@@ -2,6 +2,7 @@ import pytest
 import os
 import importlib
 import csv
+import json
 from dotenv import load_dotenv
 from deepeval import assert_test
 from deepeval.test_case import LLMTestCase
@@ -28,6 +29,25 @@ def retriever():
         pytest.exit(f"Critical: Could not load {CLASS_NAME} from {MODULE_PATH}. Error: {e}")
 
 dataset = load_dataset("galileo-ai/ragbench", BENCHMARK_NAME, split="test").shuffle(seed=42)
+
+
+def to_text(value):
+    """Normalize arbitrary dataset/retriever values into plain text for DeepEval."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    if isinstance(value, dict):
+        if "text" in value and isinstance(value["text"], str):
+            return value["text"]
+        if "content" in value and isinstance(value["content"], str):
+            return value["content"]
+        return json.dumps(value, ensure_ascii=True)
+    if isinstance(value, list):
+        return "\n".join(to_text(item) for item in value)
+    return str(value)
 
 def get_test_indices(benchmark_name, config_label):
     """Get indices of rows that haven't been processed yet for this benchmark/config combo"""
@@ -75,10 +95,11 @@ def pytest_generate_tests(metafunc):
 
 def test_retrieval_benchmarks(i, retriever):
     row = dataset[i]
-    query = row["question"]
-    expected_output = row.get("response") or row.get("answer")
+    query = to_text(row["question"])
+    expected_output = to_text(row.get("response") or row.get("answer"))
 
     retrieved_contexts, latency = retriever.search(query)
+    retrieved_contexts = [to_text(ctx) for ctx in (retrieved_contexts or [])]
 
     recall_metric = ContextualRecallMetric(threshold=0.7, model=OPENAI_MODEL)
     precision_metric = ContextualPrecisionMetric(threshold=0.7, model=OPENAI_MODEL)

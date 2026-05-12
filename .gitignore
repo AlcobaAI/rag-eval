@@ -219,3 +219,5 @@ __marimo__/
 
 .deepeval/
 *.tsv
+
+indices/

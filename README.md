@@ -7,16 +7,20 @@ RAG retrieval evaluation harness for comparing vector-search strategies on publi
 This project helps you measure retrieval quality and latency for RAG systems. It provides:
 
 - A benchmark ingestion pipeline that normalizes multiple datasets and indexes them into Qdrant.
-- Pluggable retrievers (vanilla bi-encoder and reranked bi-encoder + cross-encoder).
-- Evaluation tests powered by DeepEval, including recall, precision, and faithfulness metrics.
+- A BM25 indexing pipeline for lexical and hybrid retrieval experiments.
+- Pluggable retrievers (vanilla bi-encoder, reranked bi-encoder + cross-encoder, and hybrid BM25 + reranker).
+- Evaluation tests powered by DeepEval using contextual recall and contextual precision metrics.
 - A Docker-first workflow so you can run benchmarks consistently.
 
 ## Repository Structure
 
 - `data/ingest_benchmarks.py`: Downloads benchmark datasets into local cache.
 - `data/populate_qdrant.py`: Builds Qdrant collections and uploads embedded passages.
+- `data/build_bm25_index.py`: Builds BM25 indices under `indices/` for lexical/hybrid retrieval.
+- `data/summarize_test_runs.py`: Summarizes benchmark metrics from `benchmark_performance.tsv`.
 - `retrievers/vanilla_bge.py`: Baseline BGE embedding retriever.
 - `retrievers/reranked_bge.py`: BGE retriever with cross-encoder reranking.
+- `retrievers/hybrid_bm25_rerank.py`: BM25 lexical retrieval with cross-encoder reranking.
 - `tests/test_retrieval.py`: Main benchmark evaluation test suite.
 - `tests/test_rag.py`: Minimal smoke test scaffold for a full RAG pipeline.
 - `benchmark_performance.tsv`: Tab-separated benchmark output (metrics + latency).
@@ -26,9 +30,10 @@ This project helps you measure retrieval quality and latency for RAG systems. It
 
 1. Download and cache benchmark datasets.
 2. Normalize benchmark documents and index vectors in Qdrant.
-3. Configure which retriever implementation to test via environment variables.
-4. Run DeepEval tests against RAGBench samples.
-5. Append results to `benchmark_performance.tsv`.
+3. Build BM25 indices for lexical/hybrid retrievers.
+4. Configure which retriever implementation to test via environment variables.
+5. Run DeepEval tests against RAGBench samples.
+6. Append results to `benchmark_performance.tsv`.
 
 ## Benchmarks
 
@@ -56,6 +61,13 @@ The retrieval test currently loads `galileo-ai/ragbench` with `BENCHMARK_NAME` (
 - Class: `RerankedBGERetriever`
 - File: `retrievers/reranked_bge.py`
 - Behavior: retrieves top `K=15` candidates with BGE, reranks with `cross-encoder/ms-marco-MiniLM-L-6-v2`, returns top `5`.
+
+### 3) Hybrid BM25 + Reranker Retriever
+
+- Class: `HybridBM25RerankRetriever`
+- File: `retrievers/hybrid_bm25_rerank.py`
+- Behavior: fetches lexical candidates from BM25 index files, reranks with `cross-encoder/ms-marco-MiniLM-L-6-v2`, returns top `5`.
+- Requires prebuilt BM25 index files at paths like `indices/bm25_benchmark_<benchmark>`.
 
 ## Requirements
 
@@ -87,6 +99,12 @@ You can override the command to run retrieval benchmarks, for example:
 docker compose run --rm evaluator uv run deepeval test run tests/test_retrieval.py
 ```
 
+For hybrid BM25 runs, build BM25 indices first:
+
+```bash
+MSYS_NO_PATHCONV=1 docker compose --env-file .env run --rm -e PYTHONPATH=. -e UV_LINK_MODE=copy evaluator uv run python data/build_bm25_index.py --benchmark all --force
+```
+
 On Windows (Git Bash), use:
 
 ```bash
@@ -99,6 +117,7 @@ MSYS_NO_PATHCONV=1
 uv sync
 uv run python data/ingest_benchmarks.py
 uv run python data/populate_qdrant.py
+uv run python data/build_bm25_index.py --benchmark all --force
 uv run deepeval test run tests/test_retrieval.py
 ```
 
@@ -134,6 +153,13 @@ RETRIEVER_MODULE=retrievers.reranked_bge
 RETRIEVER_CLASS=RerankedBGERetriever
 ```
 
+To test hybrid BM25 + reranking:
+
+```env
+RETRIEVER_MODULE=retrievers.hybrid_bm25_rerank
+RETRIEVER_CLASS=HybridBM25RerankRetriever
+```
+
 ## Output Format
 
 Results are appended as tab-separated rows with columns:
@@ -144,6 +170,20 @@ Results are appended as tab-separated rows with columns:
 - `Recall`
 - `Precision`
 - `Latency_ms`
+
+`tests/test_retrieval.py` resumes from previous runs by matching `Benchmark + Test_Name + Configuration` in `benchmark_performance.tsv`. If all rows up to `BENCHMARK_SAMPLE_SIZE` are already present for that benchmark/configuration, the test is skipped.
+
+To summarize a results file:
+
+```bash
+uv run python data/summarize_test_runs.py
+```
+
+You can also point it at a different file:
+
+```bash
+uv run python data/summarize_test_runs.py --results-file path/to/other.tsv
+```
 
 ## Notes
 
