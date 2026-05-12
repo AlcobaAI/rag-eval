@@ -171,7 +171,7 @@ Results are appended as tab-separated rows with columns:
 - `Precision`
 - `Latency_ms`
 
-`tests/test_retrieval.py` resumes from previous runs by matching `Benchmark + Test_Name + Configuration` in `benchmark_performance.tsv`. If all rows up to `BENCHMARK_SAMPLE_SIZE` are already present for that benchmark/configuration, the test is skipped.
+`tests/test_retrieval.py` resumes from previous runs by matching `Benchmark + Test_Name + Configuration` in `benchmark_performance.tsv`. After a run has started, it continues from the next row after the highest completed `row_N` for that benchmark/configuration.
 
 To summarize a results file:
 

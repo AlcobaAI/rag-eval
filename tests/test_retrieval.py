@@ -50,8 +50,9 @@ def to_text(value):
     return str(value)
 
 def get_test_indices(benchmark_name, config_label):
-    """Get indices of rows that haven't been processed yet for this benchmark/config combo"""
+    """Get indices of rows that haven't been processed yet for this benchmark/config combo."""
     processed_indices = set()
+    max_processed_index = -1
     
     if os.path.exists(RESULTS_FILE):
         with open(RESULTS_FILE, 'r', encoding='utf-8') as f:
@@ -67,12 +68,17 @@ def get_test_indices(benchmark_name, config_label):
                         try:
                             idx = int(test_name.split("_")[1])
                             processed_indices.add(idx)
+                            if idx > max_processed_index:
+                                max_processed_index = idx
                         except (ValueError, IndexError):
                             pass
     
-    all_indices = list(range(min(SAMPLE_SIZE, len(dataset))))
+    if max_processed_index >= 0:
+        candidate_indices = list(range(max_processed_index + 1, len(dataset)))
+    else:
+        candidate_indices = list(range(min(SAMPLE_SIZE, len(dataset))))
     
-    unprocessed = [i for i in all_indices if i not in processed_indices]
+    unprocessed = [i for i in candidate_indices if i not in processed_indices]
     
     return unprocessed
 
